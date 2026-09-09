@@ -1,0 +1,605 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>日付印メーカー</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --ink: #d00000;
+      --text: #202124;
+      --muted: #62656a;
+      --line: #d8dadd;
+      --panel: #ffffff;
+      --page: #f4f5f7;
+      --focus: #2459d3;
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+
+    * { box-sizing: border-box; }
+
+    body {
+      min-height: 100vh;
+      margin: 0;
+      color: var(--text);
+      background: var(--page);
+    }
+
+    main {
+      width: min(980px, calc(100% - 32px));
+      margin: 0 auto;
+      padding: 48px 0;
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: clamp(24px, 4vw, 34px);
+      letter-spacing: .04em;
+    }
+
+    .lead {
+      margin: 0 0 28px;
+      color: var(--muted);
+      line-height: 1.7;
+    }
+
+    .workspace {
+      display: grid;
+      grid-template-columns: minmax(280px, 360px) minmax(300px, 1fr);
+      gap: 24px;
+      align-items: start;
+    }
+
+    .panel {
+      padding: 24px;
+      border: 1px solid var(--line);
+      border-radius: 16px;
+      background: var(--panel);
+      box-shadow: 0 8px 28px rgba(24, 28, 35, .06);
+    }
+
+    .field + .field { margin-top: 18px; }
+
+    label {
+      display: block;
+      margin-bottom: 7px;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    input {
+      width: 100%;
+      min-height: 44px;
+      padding: 9px 12px;
+      border: 1px solid #aeb2b8;
+      border-radius: 8px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+      font-size: 16px;
+    }
+
+    .checkbox-option {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      margin: 12px 0 0;
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+    }
+
+    .checkbox-option input {
+      flex: 0 0 auto;
+      width: 18px;
+      min-height: 18px;
+      height: 18px;
+      padding: 0;
+      accent-color: var(--ink);
+    }
+
+    .size-field {
+      margin: 18px 0 0;
+      padding: 0;
+      border: 0;
+    }
+
+    .size-field legend {
+      padding: 0;
+      font-size: 14px;
+      font-weight: 700;
+    }
+
+    .size-options {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 8px;
+      margin-top: 8px;
+    }
+
+    .size-option {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      min-height: 44px;
+      margin: 0;
+      padding: 8px;
+      border: 1px solid #aeb2b8;
+      border-radius: 8px;
+      font-size: 14px;
+      cursor: pointer;
+    }
+
+    .size-option:has(input:checked) {
+      border-color: var(--ink);
+      color: var(--ink);
+      background: color-mix(in srgb, var(--ink) 6%, #fff);
+    }
+
+    .size-option input {
+      flex: 0 0 auto;
+      width: 18px;
+      min-height: 18px;
+      height: 18px;
+      padding: 0;
+      accent-color: var(--ink);
+    }
+
+    input:focus-visible,
+    button:focus-visible {
+      outline: 3px solid color-mix(in srgb, var(--focus) 32%, transparent);
+      outline-offset: 2px;
+    }
+
+    .actions {
+      display: grid;
+      gap: 10px;
+      margin-top: 24px;
+    }
+
+    button {
+      min-height: 44px;
+      padding: 10px 16px;
+      border: 1px solid #aeb2b8;
+      border-radius: 9px;
+      color: var(--text);
+      background: #fff;
+      font: inherit;
+      font-weight: 700;
+      cursor: pointer;
+    }
+
+    button.primary {
+      border-color: var(--ink);
+      color: #fff;
+      background: var(--ink);
+    }
+
+    button:hover:not(:disabled) { filter: brightness(.96); }
+
+    button:disabled {
+      cursor: not-allowed;
+      opacity: .48;
+    }
+
+    #status {
+      min-height: 48px;
+      margin: 16px 0 0;
+      padding: 11px 12px;
+      border-radius: 8px;
+      color: var(--muted);
+      background: #f4f5f7;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    #status[data-state="success"] {
+      color: #155c35;
+      background: #e8f5ed;
+    }
+
+    #status[data-state="error"] {
+      color: #9e1b1b;
+      background: #fff0f0;
+    }
+
+    .preview-heading {
+      margin: 0 0 14px;
+      font-size: 16px;
+    }
+
+    .preview-wrap {
+      display: grid;
+      place-items: center;
+      aspect-ratio: 1;
+      overflow: hidden;
+      border: 1px solid var(--line);
+      border-radius: 12px;
+      background-color: #fff;
+      background-image:
+        linear-gradient(45deg, #eceef1 25%, transparent 25%),
+        linear-gradient(-45deg, #eceef1 25%, transparent 25%),
+        linear-gradient(45deg, transparent 75%, #eceef1 75%),
+        linear-gradient(-45deg, transparent 75%, #eceef1 75%);
+      background-position: 0 0, 0 12px, 12px -12px, -12px 0;
+      background-size: 24px 24px;
+    }
+
+    #stamp-preview {
+      width: min(100%, 500px);
+      aspect-ratio: 1;
+      padding: 5%;
+    }
+
+    #stamp-preview svg {
+      display: block;
+      width: 100%;
+      height: 100%;
+    }
+
+    .preview-note {
+      margin: 12px 0 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.6;
+    }
+
+    @media (max-width: 760px) {
+      main { padding: 28px 0; }
+      .workspace { grid-template-columns: 1fr; }
+      .preview-panel { order: -1; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      * { scroll-behavior: auto !important; }
+    }
+  </style>
+</head>
+<body>
+  <main>
+    <h1>日付印メーカー</h1>
+    <p class="lead">名前と日付を入力し、背景が透明な日付印をコピーまたは保存します。</p>
+
+    <div class="workspace">
+      <section class="panel" aria-label="日付印の設定">
+        <div class="field">
+          <label for="top-name">上段</label>
+          <input id="top-name" type="text" inputmode="text" autocomplete="off"
+                 placeholder="上段（任意）" aria-describedby="name-help">
+        </div>
+        <div class="field">
+          <label for="bottom-name">下段</label>
+          <input id="bottom-name" type="text" inputmode="text" autocomplete="off"
+                 placeholder="下段（任意）" aria-describedby="name-help">
+        </div>
+        <p id="name-help" class="preview-note">各欄は4文字以内です。両方とも空欄にできます。</p>
+        <div class="field">
+          <label for="stamp-date">日付</label>
+          <input id="stamp-date" type="date" required>
+          <label class="checkbox-option" for="short-year">
+            <input id="short-year" type="checkbox">
+            <span>年を2桁で表示（2026 → '26）</span>
+          </label>
+        </div>
+
+        <fieldset class="size-field" aria-describedby="size-help">
+          <legend>PNGサイズ</legend>
+          <div class="size-options">
+            <label class="size-option"><input id="output-small" name="output-size" type="radio" value="256" checked>小</label>
+            <label class="size-option"><input id="output-medium" name="output-size" type="radio" value="512">中</label>
+            <label class="size-option"><input id="output-large" name="output-size" type="radio" value="1024">大</label>
+          </div>
+          <p id="size-help" class="preview-note">通常の使用では「小」が適しています。貼り付け後、用途に合わせてサイズを調整してください。</p>
+        </fieldset>
+
+        <div class="actions">
+          <button id="copy-png" class="primary" type="button" disabled>透過PNGをコピー</button>
+          <button id="download-png" type="button" disabled>PNGを保存</button>
+          <button id="download-svg" type="button" disabled>SVGを保存</button>
+        </div>
+        <p id="status" role="status" aria-live="polite" data-state="working">画像を準備しています。</p>
+      </section>
+
+      <section class="panel preview-panel" aria-labelledby="preview-title">
+        <h2 id="preview-title" class="preview-heading">プレビュー</h2>
+        <div class="preview-wrap">
+          <div id="stamp-preview"></div>
+        </div>
+        <p class="preview-note">格子模様は透明部分の確認用で、保存画像には入りません。</p>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    (() => {
+      "use strict";
+
+      const INK = "#D00000";
+      const NAME_FONT_FAMILY = "'BIZ UDMincho Medium', 'BIZ UDMincho', 'BIZ UD明朝 Medium', 'Hiragino Mincho ProN', 'MS Mincho', 'Noto Serif CJK JP', serif";
+      const DATE_FONT_FAMILY = "'BIZ UDPMincho Medium', 'BIZ UDPMincho', 'BIZ UDP明朝 Medium', 'Hiragino Mincho ProN', 'MS PMincho', 'Noto Serif CJK JP', serif";
+      const MAX_NAME_LENGTH = 4;
+      const elements = {
+        topName: document.querySelector("#top-name"),
+        bottomName: document.querySelector("#bottom-name"),
+        date: document.querySelector("#stamp-date"),
+        shortYear: document.querySelector("#short-year"),
+        outputSizes: document.querySelectorAll('input[name="output-size"]'),
+        preview: document.querySelector("#stamp-preview"),
+        copyPng: document.querySelector("#copy-png"),
+        downloadPng: document.querySelector("#download-png"),
+        downloadSvg: document.querySelector("#download-svg"),
+        status: document.querySelector("#status")
+      };
+
+      let currentSvg = "";
+      let currentPngBlob = null;
+      let currentConfig = null;
+      let renderGeneration = 0;
+      const measureCanvas = document.createElement("canvas");
+      const measureContext = measureCanvas.getContext("2d");
+      const graphemeSegmenter = typeof Intl.Segmenter === "function"
+        ? new Intl.Segmenter("ja", { granularity: "grapheme" })
+        : null;
+
+      function getLocalDateValue() {
+        const now = new Date();
+        const year = String(now.getFullYear()).padStart(4, "0");
+        const month = String(now.getMonth() + 1).padStart(2, "0");
+        const day = String(now.getDate()).padStart(2, "0");
+        return `${year}-${month}-${day}`;
+      }
+
+      function graphemeLength(value) {
+        if (graphemeSegmenter) return Array.from(graphemeSegmenter.segment(value)).length;
+        return Array.from(value.normalize("NFC")).length;
+      }
+
+      function readStampConfig() {
+        return {
+          topName: elements.topName.value.trim(),
+          bottomName: elements.bottomName.value.trim(),
+          date: elements.date.value,
+          shortYear: elements.shortYear.checked,
+          color: INK,
+          outputSize: Number(document.querySelector('input[name="output-size"]:checked').value)
+        };
+      }
+
+      function validateStampConfig(config) {
+        if (graphemeLength(config.topName) > MAX_NAME_LENGTH) {
+          return { valid: false, field: "topName", message: "上段は4文字以内で入力してください。" };
+        }
+        if (graphemeLength(config.bottomName) > MAX_NAME_LENGTH) {
+          return { valid: false, field: "bottomName", message: "下段は4文字以内で入力してください。" };
+        }
+        const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(config.date);
+        if (!match) {
+          return { valid: false, field: "date", message: "日付を入力してください。" };
+        }
+        const year = Number(match[1]);
+        const month = Number(match[2]);
+        const day = Number(match[3]);
+        const candidate = new Date(year, month - 1, day);
+        if (candidate.getFullYear() !== year || candidate.getMonth() !== month - 1 || candidate.getDate() !== day) {
+          return { valid: false, field: "date", message: "有効な日付を入力してください。" };
+        }
+        return { valid: true, field: null, message: "" };
+      }
+
+      function escapeXml(value) {
+        return value
+          .replaceAll("&", "&amp;")
+          .replaceAll("<", "&lt;")
+          .replaceAll(">", "&gt;")
+          .replaceAll('"', "&quot;")
+          .replaceAll("'", "&apos;");
+      }
+
+      function formatDate(value, shortYear) {
+        const [year, month, day] = value.split("-");
+        return shortYear
+          ? `'${year.slice(-2)}.${month}.${day}`
+          : `${year}.${month}.${day}`;
+      }
+
+      function calculateFontSize(text, maxWidth, maximum, minimum, fontFamily) {
+        if (!text) return maximum;
+        let low = minimum;
+        let high = maximum;
+        while (high - low > 1) {
+          const middle = Math.floor((low + high) / 2);
+          measureContext.font = `600 ${middle}px ${fontFamily}`;
+          if (measureContext.measureText(text).width <= maxWidth) {
+            low = middle;
+          } else {
+            high = middle;
+          }
+        }
+        return low;
+      }
+
+      function buildStampSvg(config) {
+        const dateText = formatDate(config.date, config.shortYear);
+        const topSize = calculateFontSize(config.topName, 680, 230, 92, NAME_FONT_FAMILY);
+        const bottomSize = calculateFontSize(config.bottomName, 680, 230, 92, NAME_FONT_FAMILY);
+        const dateSize = calculateFontSize(dateText, 760, config.shortYear ? 165 : 145, 96, DATE_FONT_FAMILY);
+        const safeTop = escapeXml(config.topName);
+        const safeBottom = escapeXml(config.bottomName);
+        const safeDate = escapeXml(dateText);
+        return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" role="img" aria-label="日付印">
+  <defs>
+    <clipPath id="stamp-clip"><circle cx="500" cy="500" r="440"/></clipPath>
+  </defs>
+  <g fill="none" stroke="${config.color}" stroke-width="30" stroke-linecap="butt" stroke-linejoin="round">
+    <circle cx="500" cy="500" r="440"/>
+    <g clip-path="url(#stamp-clip)">
+      <line class="divider" x1="35" y1="355" x2="965" y2="355"/>
+      <line class="divider" x1="35" y1="645" x2="965" y2="645"/>
+    </g>
+  </g>
+  <g fill="${config.color}" font-weight="600" text-anchor="middle" dominant-baseline="central">
+    <text id="top-text" x="500" y="208" font-family="${NAME_FONT_FAMILY}" font-size="${topSize}">${safeTop}</text>
+    <text id="date-text" x="500" y="500" font-family="${DATE_FONT_FAMILY}" font-size="${dateSize}">${safeDate}</text>
+    <text id="bottom-text" x="500" y="792" font-family="${NAME_FONT_FAMILY}" font-size="${bottomSize}">${safeBottom}</text>
+  </g>
+</svg>`;
+      }
+
+      function renderPreview(svg) {
+        const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
+        const error = parsed.querySelector("parsererror");
+        if (error) throw new Error("SVGの生成に失敗しました。");
+        elements.preview.replaceChildren(document.importNode(parsed.documentElement, true));
+      }
+
+      function renderPngBlob(svg, size) {
+        return new Promise((resolve, reject) => {
+          const svgBlob = new Blob([svg], { type: "image/svg+xml;charset=utf-8" });
+          const url = URL.createObjectURL(svgBlob);
+          const image = new Image();
+          image.onload = () => {
+            try {
+              const canvas = document.createElement("canvas");
+              canvas.width = size;
+              canvas.height = size;
+              const context = canvas.getContext("2d", { alpha: true });
+              context.clearRect(0, 0, size, size);
+              context.drawImage(image, 0, 0, size, size);
+              canvas.toBlob((blob) => {
+                URL.revokeObjectURL(url);
+                if (blob) resolve(blob);
+                else reject(new Error("PNGの生成に失敗しました。"));
+              }, "image/png");
+            } catch (error) {
+              URL.revokeObjectURL(url);
+              reject(error);
+            }
+          };
+          image.onerror = () => {
+            URL.revokeObjectURL(url);
+            reject(new Error("印影画像を読み込めませんでした。"));
+          };
+          image.src = url;
+        });
+      }
+
+      function setButtonsDisabled(disabled) {
+        elements.copyPng.disabled = disabled;
+        elements.downloadPng.disabled = disabled;
+        elements.downloadSvg.disabled = disabled;
+      }
+
+      function setStatus(message, state) {
+        elements.status.textContent = message;
+        elements.status.dataset.state = state;
+      }
+
+      function updateInputValidity(invalidField = null) {
+        elements.topName.setAttribute("aria-invalid", String(invalidField === "topName"));
+        elements.bottomName.setAttribute("aria-invalid", String(invalidField === "bottomName"));
+        elements.date.setAttribute("aria-invalid", String(invalidField === "date"));
+        elements.topName.setAttribute("aria-describedby", invalidField === "topName" ? "name-help status" : "name-help");
+        elements.bottomName.setAttribute("aria-describedby", invalidField === "bottomName" ? "name-help status" : "name-help");
+        if (invalidField === "date") elements.date.setAttribute("aria-describedby", "status");
+        else elements.date.removeAttribute("aria-describedby");
+      }
+
+      async function refreshOutput() {
+        const generation = ++renderGeneration;
+        const config = readStampConfig();
+        const validation = validateStampConfig(config);
+        updateInputValidity(validation.field);
+        currentPngBlob = null;
+        currentConfig = null;
+        if (!validation.valid) {
+          currentSvg = "";
+          elements.preview.replaceChildren();
+          setButtonsDisabled(true);
+          setStatus(validation.message, "error");
+          return;
+        }
+
+        try {
+          currentSvg = buildStampSvg(config);
+          currentConfig = config;
+          renderPreview(currentSvg);
+          setButtonsDisabled(true);
+          elements.downloadSvg.disabled = false;
+          setStatus("画像を準備しています。", "working");
+          if (document.fonts && document.fonts.ready) await document.fonts.ready;
+          const pngBlob = await renderPngBlob(currentSvg, config.outputSize);
+          if (generation !== renderGeneration) return;
+          currentPngBlob = pngBlob;
+          setButtonsDisabled(false);
+          setStatus("コピーまたは保存できます。", "ready");
+        } catch (error) {
+          if (generation !== renderGeneration) return;
+          currentPngBlob = null;
+          elements.copyPng.disabled = true;
+          elements.downloadPng.disabled = true;
+          setStatus(error instanceof Error ? error.message : "画像の生成に失敗しました。", "error");
+        }
+      }
+
+      function fileStem(config) {
+        return `日付印_${config.date.replaceAll("-", "")}`;
+      }
+
+      function downloadBlob(blob, filename) {
+        const url = URL.createObjectURL(blob);
+        const link = document.createElement("a");
+        link.href = url;
+        link.download = filename;
+        document.body.append(link);
+        link.click();
+        link.remove();
+        window.setTimeout(() => URL.revokeObjectURL(url), 0);
+      }
+
+      async function copyPng(blob) {
+        if (!window.isSecureContext || !navigator.clipboard?.write || !window.ClipboardItem) {
+          return { ok: false, reason: "unsupported" };
+        }
+        try {
+          await navigator.clipboard.write([new ClipboardItem({ "image/png": blob })]);
+          return { ok: true, reason: "" };
+        } catch (error) {
+          return { ok: false, reason: error instanceof Error ? error.name : "failed" };
+        }
+      }
+
+      elements.copyPng.addEventListener("click", async () => {
+        if (!currentPngBlob) return;
+        const result = await copyPng(currentPngBlob);
+        if (result.ok) {
+          setStatus("透過PNGをクリップボードへコピーしました。", "success");
+        } else {
+          setStatus("このブラウザでは直接コピーできません。「PNGを保存」を使ってください。", "error");
+        }
+      });
+
+      elements.downloadPng.addEventListener("click", () => {
+        if (!currentPngBlob || !currentConfig) return;
+        downloadBlob(currentPngBlob, `${fileStem(currentConfig)}.png`);
+        setStatus("透過PNGを保存しました。", "success");
+      });
+
+      elements.downloadSvg.addEventListener("click", () => {
+        if (!currentSvg || !currentConfig) return;
+        const blob = new Blob([currentSvg], { type: "image/svg+xml;charset=utf-8" });
+        downloadBlob(blob, `${fileStem(currentConfig)}.svg`);
+        setStatus("SVGを保存しました。", "success");
+      });
+
+      for (const input of [elements.topName, elements.bottomName, elements.date, elements.shortYear, ...elements.outputSizes]) {
+        input.addEventListener("input", refreshOutput);
+      }
+
+      elements.date.value = getLocalDateValue();
+      refreshOutput();
+    })();
+  </script>
+</body>
+</html>
