@@ -246,6 +246,50 @@
       line-height: 1.6;
     }
 
+    .verifier-panel {
+      margin-top: 24px;
+    }
+
+    .verifier-panel h2 {
+      margin: 0 0 8px;
+      font-size: 20px;
+    }
+
+    #verify-status {
+      margin: 16px 0 0;
+      padding: 11px 12px;
+      border-radius: 8px;
+      background: #f4f5f7;
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    #verify-status[data-state="verified"] {
+      color: #155c35;
+      background: #e8f5ed;
+    }
+
+    #verify-status[data-state="modified"],
+    #verify-status[data-state="error"] {
+      color: #9e1b1b;
+      background: #fff0f0;
+    }
+
+    .verify-details {
+      display: grid;
+      grid-template-columns: max-content minmax(0, 1fr);
+      gap: 8px 18px;
+      margin: 16px 0 0;
+      font-size: 14px;
+    }
+
+    .verify-details dt { font-weight: 700; }
+    .verify-details dd {
+      min-width: 0;
+      margin: 0;
+      overflow-wrap: anywhere;
+    }
+
     @media (max-width: 760px) {
       main { padding: 28px 0; }
       .workspace { grid-template-columns: 1fr; }
@@ -310,6 +354,15 @@
         <p class="preview-note">格子模様は透明部分の確認用で、保存画像には入りません。</p>
       </section>
     </div>
+
+    <section id="provenance-verifier" class="panel verifier-panel" aria-labelledby="verify-title" hidden>
+      <h2 id="verify-title">画像の来歴を確認</h2>
+      <p class="lead">このツールで作成されたPNGまたはSVGを選択してください。</p>
+      <label for="verify-file">画像ファイル</label>
+      <input id="verify-file" type="file" accept="image/png,image/svg+xml,.png,.svg">
+      <p id="verify-status" role="status" aria-live="polite" data-state="idle">画像を選択してください。</p>
+      <dl id="verify-details" class="verify-details"></dl>
+    </section>
   </main>
 
   <script>
@@ -320,6 +373,20 @@
       const NAME_FONT_FAMILY = "'BIZ UDMincho Medium', 'BIZ UDMincho', 'BIZ UD明朝 Medium', 'Hiragino Mincho ProN', 'MS Mincho', 'Noto Serif CJK JP', serif";
       const DATE_FONT_FAMILY = "'BIZ UDPMincho Medium', 'BIZ UDPMincho', 'BIZ UDP明朝 Medium', 'Hiragino Mincho ProN', 'MS PMincho', 'Noto Serif CJK JP', serif";
       const MAX_NAME_LENGTH = 4;
+      const PROVENANCE_SCHEMA = "org.jardingris.date-stamp-maker.provenance";
+      const PROVENANCE_VERSION = 1;
+      const PROVENANCE_ISSUER_ID = "6dce9d5b-ddd2-4121-b179-c8e6a861c061";
+      const PROVENANCE_KEYWORD = "DateStampMaker";
+      const PIXEL_WATERMARK_MAGIC = new Uint8Array([68, 83, 77, 49]);
+      const MAX_PROVENANCE_BYTES = 65535;
+      const MAX_VERIFY_FILE_SIZE = 20 * 1024 * 1024;
+      const MAX_VERIFY_SVG_SIZE = 2 * 1024 * 1024;
+      const MAX_VERIFY_PNG_DIMENSION = 2048;
+      const MAX_VERIFY_PNG_PIXELS = 2048 * 2048;
+      const PNG_SIGNATURE = new Uint8Array([137, 80, 78, 71, 13, 10, 26, 10]);
+      const textEncoder = new TextEncoder();
+      const textDecoder = new TextDecoder();
+      const strictTextDecoder = new TextDecoder("utf-8", { fatal: true });
       const elements = {
         topName: document.querySelector("#top-name"),
         bottomName: document.querySelector("#bottom-name"),
@@ -330,13 +397,18 @@
         copyPng: document.querySelector("#copy-png"),
         downloadPng: document.querySelector("#download-png"),
         downloadSvg: document.querySelector("#download-svg"),
-        status: document.querySelector("#status")
+        status: document.querySelector("#status"),
+        verifier: document.querySelector("#provenance-verifier"),
+        verifyFile: document.querySelector("#verify-file"),
+        verifyStatus: document.querySelector("#verify-status"),
+        verifyDetails: document.querySelector("#verify-details")
       };
 
       let currentSvg = "";
       let currentPngBlob = null;
       let currentConfig = null;
       let renderGeneration = 0;
+      let verificationGeneration = 0;
       const measureCanvas = document.createElement("canvas");
       const measureContext = measureCanvas.getContext("2d");
       const graphemeSegmenter = typeof Intl.Segmenter === "function"
@@ -395,6 +467,419 @@
           .replaceAll(">", "&gt;")
           .replaceAll('"', "&quot;")
           .replaceAll("'", "&apos;");
+      }
+
+      function concatBytes(...parts) {
+        const totalLength = parts.reduce((sum, part) => sum + part.length, 0);
+        const result = new Uint8Array(totalLength);
+        let offset = 0;
+        for (const part of parts) {
+          result.set(part, offset);
+          offset += part.length;
+        }
+        return result;
+      }
+
+      function uint32Bytes(value) {
+        const bytes = new Uint8Array(4);
+        new DataView(bytes.buffer).setUint32(0, value >>> 0);
+        return bytes;
+      }
+
+      function uint16Bytes(value) {
+        const bytes = new Uint8Array(2);
+        new DataView(bytes.buffer).setUint16(0, value);
+        return bytes;
+      }
+
+      function crc32(bytes) {
+        let crc = 0xffffffff;
+        for (const byte of bytes) {
+          crc ^= byte;
+          for (let bit = 0; bit < 8; bit += 1) {
+            crc = (crc >>> 1) ^ (0xedb88320 & -(crc & 1));
+          }
+        }
+        return (crc ^ 0xffffffff) >>> 0;
+      }
+
+      function createPngChunk(type, data) {
+        const typeBytes = textEncoder.encode(type);
+        const crcInput = concatBytes(typeBytes, data);
+        return concatBytes(
+          uint32Bytes(data.length),
+          typeBytes,
+          data,
+          uint32Bytes(crc32(crcInput))
+        );
+      }
+
+      function hasPngSignature(bytes) {
+        return bytes.length >= PNG_SIGNATURE.length
+          && PNG_SIGNATURE.every((byte, index) => bytes[index] === byte);
+      }
+
+      function parsePngChunks(bytes, validateCrc = true) {
+        if (!hasPngSignature(bytes)) throw new Error("PNG形式ではありません。");
+        const chunks = [];
+        let offset = PNG_SIGNATURE.length;
+        while (offset < bytes.length) {
+          if (offset + 12 > bytes.length) throw new Error("PNGデータが途中で切れています。");
+          const length = new DataView(bytes.buffer, bytes.byteOffset + offset, 4).getUint32(0);
+          const end = offset + 12 + length;
+          if (end > bytes.length) throw new Error("PNGチャンクの長さが不正です。");
+          const typeBytes = bytes.slice(offset + 4, offset + 8);
+          const type = new TextDecoder("ascii").decode(typeBytes);
+          const data = bytes.slice(offset + 8, offset + 8 + length);
+          const expectedCrc = new DataView(bytes.buffer, bytes.byteOffset + offset + 8 + length, 4).getUint32(0);
+          if (validateCrc && crc32(concatBytes(typeBytes, data)) !== expectedCrc) {
+            throw new Error("PNGチャンクの検査値が一致しません。");
+          }
+          chunks.push({ type, data, offset, end, raw: bytes.slice(offset, end) });
+          offset = end;
+          if (type === "IEND") {
+            if (offset !== bytes.length) throw new Error("PNG終端後に不正なデータがあります。");
+            break;
+          }
+        }
+        if (chunks.at(-1)?.type !== "IEND") throw new Error("PNG終端がありません。");
+        return chunks;
+      }
+
+      async function sha256Hex(bytes) {
+        if (!window.crypto?.subtle) throw new Error("画像を生成できません。");
+        const digest = new Uint8Array(await window.crypto.subtle.digest("SHA-256", bytes));
+        return Array.from(digest, (byte) => byte.toString(16).padStart(2, "0")).join("");
+      }
+
+      function createRecordId() {
+        if (typeof window.crypto.randomUUID === "function") return window.crypto.randomUUID();
+        const bytes = window.crypto.getRandomValues(new Uint8Array(16));
+        bytes[6] = (bytes[6] & 0x0f) | 0x40;
+        bytes[8] = (bytes[8] & 0x3f) | 0x80;
+        const hex = Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+        return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-${hex.slice(12, 16)}-${hex.slice(16, 20)}-${hex.slice(20)}`;
+      }
+
+      function createProvenanceRecord(config, identity, format, scope, digestValue) {
+        return {
+          schema: PROVENANCE_SCHEMA,
+          version: PROVENANCE_VERSION,
+          issuerId: PROVENANCE_ISSUER_ID,
+          recordId: identity.recordId,
+          createdAt: identity.createdAt,
+          format,
+          stamp: {
+            topName: config.topName,
+            bottomName: config.bottomName,
+            date: config.date,
+            shortYear: config.shortYear,
+            color: config.color,
+            outputSize: config.outputSize
+          },
+          digest: {
+            algorithm: "SHA-256",
+            scope,
+            value: digestValue
+          }
+        };
+      }
+
+      async function embedSvgProvenance(svg, config, identity) {
+        const digestValue = await sha256Hex(textEncoder.encode(svg));
+        const record = createProvenanceRecord(config, identity, "svg", "svg-without-provenance", digestValue);
+        const insertAt = svg.indexOf("\n") + 1;
+        if (insertAt === 0) throw new Error("SVGの形式が不正です。");
+        const metadata = `  <metadata id="date-stamp-provenance">${escapeXml(JSON.stringify(record))}</metadata>\n`;
+        return `${svg.slice(0, insertAt)}${metadata}${svg.slice(insertAt)}`;
+      }
+
+      function canvasToPngBlob(canvas) {
+        return new Promise((resolve, reject) => {
+          canvas.toBlob((blob) => {
+            if (blob) resolve(blob);
+            else reject(new Error("PNGの生成に失敗しました。"));
+          }, "image/png");
+        });
+      }
+
+      function writePixelPacket(imageData, packet) {
+        const carrierOffsets = [];
+        for (let offset = 0; offset < imageData.data.length; offset += 4) {
+          const red = imageData.data[offset];
+          const green = imageData.data[offset + 1];
+          const blue = imageData.data[offset + 2];
+          const alpha = imageData.data[offset + 3];
+          if (alpha >= 250 && red >= 128 && green <= 64 && blue <= 64) {
+            carrierOffsets.push(offset + 2);
+          }
+        }
+        const requiredBits = packet.length * 8;
+        if (carrierOffsets.length < requiredBits) throw new Error("画像に記録情報を格納できません。");
+        for (let bitIndex = 0; bitIndex < requiredBits; bitIndex += 1) {
+          const byte = packet[Math.floor(bitIndex / 8)];
+          const bit = (byte >>> (7 - (bitIndex % 8))) & 1;
+          const blueOffset = carrierOffsets[bitIndex];
+          imageData.data[blueOffset] = (imageData.data[blueOffset] & 0xfe) | bit;
+        }
+      }
+
+      function getCarrierOffsets(imageData) {
+        const offsets = [];
+        for (let offset = 0; offset < imageData.data.length; offset += 4) {
+          const red = imageData.data[offset];
+          const green = imageData.data[offset + 1];
+          const blue = imageData.data[offset + 2];
+          const alpha = imageData.data[offset + 3];
+          if (alpha >= 250 && red >= 128 && green <= 64 && blue <= 64) offsets.push(offset + 2);
+        }
+        return offsets;
+      }
+
+      function readCarrierBytes(imageData, carrierOffsets, byteCount) {
+        if (carrierOffsets.length < byteCount * 8) return null;
+        const bytes = new Uint8Array(byteCount);
+        for (let byteIndex = 0; byteIndex < byteCount; byteIndex += 1) {
+          let value = 0;
+          for (let bitIndex = 0; bitIndex < 8; bitIndex += 1) {
+            const carrierIndex = byteIndex * 8 + bitIndex;
+            value = (value << 1) | (imageData.data[carrierOffsets[carrierIndex]] & 1);
+          }
+          bytes[byteIndex] = value;
+        }
+        return bytes;
+      }
+
+      async function blobToImageData(blob) {
+        const image = await createImageBitmap(blob);
+        if (image.width > MAX_VERIFY_PNG_DIMENSION
+            || image.height > MAX_VERIFY_PNG_DIMENSION
+            || image.width * image.height > MAX_VERIFY_PNG_PIXELS) {
+          image.close();
+          throw new Error("画像の寸法が大きすぎます。");
+        }
+        const canvas = document.createElement("canvas");
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const context = canvas.getContext("2d", { alpha: true, willReadFrequently: true });
+        context.drawImage(image, 0, 0);
+        image.close();
+        return context.getImageData(0, 0, canvas.width, canvas.height);
+      }
+
+      function decodeITxt(data) {
+        const keywordEnd = data.indexOf(0);
+        if (keywordEnd < 1 || keywordEnd + 5 > data.length) throw new Error("PNGテキストチャンクが不正です。");
+        const keyword = textDecoder.decode(data.slice(0, keywordEnd));
+        let position = keywordEnd + 1;
+        const compressionFlag = data[position];
+        const compressionMethod = data[position + 1];
+        position += 2;
+        const languageEnd = data.indexOf(0, position);
+        if (languageEnd < 0) throw new Error("PNG言語情報が不正です。");
+        position = languageEnd + 1;
+        const translatedEnd = data.indexOf(0, position);
+        if (translatedEnd < 0) throw new Error("PNG翻訳情報が不正です。");
+        position = translatedEnd + 1;
+        if (compressionFlag !== 0 || compressionMethod !== 0) throw new Error("PNG記録情報の圧縮形式に対応していません。");
+        const textBytes = data.slice(position);
+        if (textBytes.length > MAX_PROVENANCE_BYTES) throw new Error("PNG記録情報が大きすぎます。");
+        return { keyword, text: strictTextDecoder.decode(textBytes) };
+      }
+
+      function extractPngTextRecord(bytes) {
+        const records = [];
+        for (const chunk of parsePngChunks(bytes)) {
+          if (chunk.type !== "iTXt") continue;
+          const keywordEnd = chunk.data.indexOf(0);
+          if (keywordEnd < 1) continue;
+          const keyword = textDecoder.decode(chunk.data.slice(0, keywordEnd));
+          if (keyword !== PROVENANCE_KEYWORD) continue;
+          const decoded = decodeITxt(chunk.data);
+          records.push(JSON.parse(decoded.text));
+        }
+        if (records.length > 1) throw new Error("PNG記録情報が重複しています。");
+        return records[0] ?? null;
+      }
+
+      function hasMagic(bytes, magic) {
+        return bytes && magic.every((byte, index) => bytes[index] === byte);
+      }
+
+      async function extractPixelRecord(imageData) {
+        const carrierOffsets = getCarrierOffsets(imageData);
+        const header = readCarrierBytes(imageData, carrierOffsets, 6);
+        if (!hasMagic(header, PIXEL_WATERMARK_MAGIC)) return null;
+        const payloadLength = new DataView(header.buffer, header.byteOffset + 4, 2).getUint16(0);
+        if (payloadLength > MAX_PROVENANCE_BYTES) throw new Error("画像内の記録情報が大きすぎます。");
+        const packet = readCarrierBytes(imageData, carrierOffsets, 6 + payloadLength + 4);
+        if (!packet) throw new Error("画像内の記録情報が途中で切れています。");
+        const payload = packet.slice(6, 6 + payloadLength);
+        const expectedCrc = new DataView(packet.buffer, packet.byteOffset + 6 + payloadLength, 4).getUint32(0);
+        if (crc32(payload) !== expectedCrc) throw new Error("画像内の記録情報が破損しています。");
+        const record = JSON.parse(strictTextDecoder.decode(payload));
+        const canonicalRgba = new Uint8Array(imageData.data);
+        for (const offset of carrierOffsets) canonicalRgba[offset] &= 0xfe;
+        return { record, digestValue: await sha256Hex(canonicalRgba) };
+      }
+
+      function validatePngDimensions(bytes) {
+        const chunks = parsePngChunks(bytes);
+        const ihdr = chunks[0];
+        if (ihdr?.type !== "IHDR" || ihdr.data.length !== 13) throw new Error("PNGヘッダーが不正です。");
+        const view = new DataView(ihdr.data.buffer, ihdr.data.byteOffset, ihdr.data.byteLength);
+        const width = view.getUint32(0);
+        const height = view.getUint32(4);
+        if (width === 0 || height === 0
+            || width > MAX_VERIFY_PNG_DIMENSION
+            || height > MAX_VERIFY_PNG_DIMENSION
+            || width * height > MAX_VERIFY_PNG_PIXELS) {
+          throw new Error("画像の寸法が大きすぎます。");
+        }
+      }
+
+      function isValidRecord(record, expectedFormat) {
+        if (!record || typeof record !== "object" || Array.isArray(record)) return false;
+        if (record.schema !== PROVENANCE_SCHEMA || record.version !== PROVENANCE_VERSION) return false;
+        if (record.issuerId !== PROVENANCE_ISSUER_ID || record.format !== expectedFormat) return false;
+        if (typeof record.recordId !== "string" || !/^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(record.recordId)) return false;
+        if (typeof record.createdAt !== "string" || !Number.isFinite(Date.parse(record.createdAt))) return false;
+        if (!record.stamp || typeof record.stamp !== "object" || Array.isArray(record.stamp)) return false;
+        if (typeof record.stamp.topName !== "string" || typeof record.stamp.bottomName !== "string") return false;
+        if (typeof record.stamp.date !== "string" || typeof record.stamp.shortYear !== "boolean") return false;
+        if (record.stamp.color !== INK || ![256, 512, 1024].includes(record.stamp.outputSize)) return false;
+        if (!record.digest || record.digest.algorithm !== "SHA-256") return false;
+        return typeof record.digest.value === "string" && /^[0-9a-f]{64}$/.test(record.digest.value);
+      }
+
+      async function verifyPng(file, bytes) {
+        validatePngDimensions(bytes);
+        const imageData = await blobToImageData(file);
+        const pixelResult = await extractPixelRecord(imageData);
+        if (!pixelResult || !isValidRecord(pixelResult.record, "png")) return { state: "unverified", record: null };
+        const metadataRecord = extractPngTextRecord(bytes);
+        const metadataMatches = metadataRecord === null
+          || JSON.stringify(metadataRecord) === JSON.stringify(pixelResult.record);
+        const digestMatches = pixelResult.record.digest.scope === "rgba-blue-lsb-cleared"
+          && pixelResult.record.digest.value === pixelResult.digestValue;
+        return {
+          state: metadataMatches && digestMatches ? "verified" : "modified",
+          record: pixelResult.record
+        };
+      }
+
+      function extractSvgRecord(svg, parsed) {
+        const startToken = '  <metadata id="date-stamp-provenance">';
+        const endToken = "</metadata>\n";
+        const start = svg.indexOf(startToken);
+        if (start < 0) return null;
+        if (svg.indexOf(startToken, start + startToken.length) >= 0) throw new Error("SVG記録情報が重複しています。");
+        const endStart = svg.indexOf(endToken, start + startToken.length);
+        if (endStart < 0) throw new Error("SVG記録情報が途中で切れています。");
+        const metadataElements = parsed.querySelectorAll("metadata#date-stamp-provenance");
+        if (metadataElements.length !== 1) throw new Error("SVG記録情報が不正です。");
+        const record = JSON.parse(metadataElements[0].textContent);
+        const end = endStart + endToken.length;
+        return { record, svgWithoutProvenance: `${svg.slice(0, start)}${svg.slice(end)}` };
+      }
+
+      async function verifySvg(svg) {
+        const parsed = new DOMParser().parseFromString(svg, "image/svg+xml");
+        if (parsed.querySelector("parsererror") || parsed.documentElement.localName !== "svg") {
+          throw new Error("SVG形式が不正です。");
+        }
+        const extracted = extractSvgRecord(svg, parsed);
+        if (!extracted || !isValidRecord(extracted.record, "svg")) return { state: "unverified", record: null };
+        const digestValue = await sha256Hex(textEncoder.encode(extracted.svgWithoutProvenance));
+        const matches = extracted.record.digest.scope === "svg-without-provenance"
+          && extracted.record.digest.value === digestValue;
+        return { state: matches ? "verified" : "modified", record: extracted.record };
+      }
+
+      async function verifyArtifact(file) {
+        if (!file || file.size === 0) throw new Error("画像ファイルを選択してください。");
+        if (file.size > MAX_VERIFY_FILE_SIZE) throw new Error("20MB以下の画像を選択してください。");
+        const bytes = new Uint8Array(await file.arrayBuffer());
+        if (hasPngSignature(bytes)) return verifyPng(file, bytes);
+        if (file.size > MAX_VERIFY_SVG_SIZE) throw new Error("SVGは2MB以下のものを選択してください。");
+        let text;
+        try {
+          text = strictTextDecoder.decode(bytes);
+        } catch {
+          throw new Error("PNGまたはSVGを選択してください。");
+        }
+        return verifySvg(text);
+      }
+
+      function setVerifyStatus(message, state) {
+        elements.verifyStatus.textContent = message;
+        elements.verifyStatus.dataset.state = state;
+      }
+
+      function addVerificationDetail(label, value) {
+        const term = document.createElement("dt");
+        const detail = document.createElement("dd");
+        term.textContent = label;
+        detail.textContent = value;
+        elements.verifyDetails.append(term, detail);
+      }
+
+      function renderVerificationResult(result) {
+        elements.verifyDetails.replaceChildren();
+        if (result.state === "verified") setVerifyStatus("来歴情報と画像内容が一致しています。", "verified");
+        else if (result.state === "modified") setVerifyStatus("画像内容が記録時から変更されています。", "modified");
+        else setVerifyStatus("この画像の来歴情報は確認できません。再保存などで情報が失われた可能性があります。", "unverified");
+        if (!result.record) return;
+        const record = result.record;
+        addVerificationDetail("形式", record.format.toUpperCase());
+        addVerificationDetail("記録日時", new Date(record.createdAt).toLocaleString("ja-JP"));
+        addVerificationDetail("発行元ID", record.issuerId);
+        addVerificationDetail("記録ID", record.recordId);
+        addVerificationDetail("印面日付", record.stamp.date);
+        addVerificationDetail("上段", record.stamp.topName || "空欄");
+        addVerificationDetail("下段", record.stamp.bottomName || "空欄");
+      }
+
+      function configureVerificationMode() {
+        elements.verifier.hidden = location.hash !== "#verify-provenance";
+      }
+
+      async function embedPngProvenance(blob, config, identity) {
+        const image = await createImageBitmap(blob);
+        const canvas = document.createElement("canvas");
+        canvas.width = image.width;
+        canvas.height = image.height;
+        const context = canvas.getContext("2d", { alpha: true, willReadFrequently: true });
+        context.drawImage(image, 0, 0);
+        image.close();
+        const imageData = context.getImageData(0, 0, canvas.width, canvas.height);
+        const canonicalRgba = new Uint8Array(imageData.data);
+        for (const offset of getCarrierOffsets(imageData)) canonicalRgba[offset] &= 0xfe;
+        const digestValue = await sha256Hex(canonicalRgba);
+        const record = createProvenanceRecord(config, identity, "png", "rgba-blue-lsb-cleared", digestValue);
+        const jsonBytes = textEncoder.encode(JSON.stringify(record));
+        if (jsonBytes.length > MAX_PROVENANCE_BYTES) throw new Error("画像の記録情報が大きすぎます。");
+        const packet = concatBytes(
+          PIXEL_WATERMARK_MAGIC,
+          uint16Bytes(jsonBytes.length),
+          jsonBytes,
+          uint32Bytes(crc32(jsonBytes))
+        );
+        writePixelPacket(imageData, packet);
+        context.putImageData(imageData, 0, 0);
+        const watermarkedBlob = await canvasToPngBlob(canvas);
+        const bytes = new Uint8Array(await watermarkedBlob.arrayBuffer());
+        const chunks = parsePngChunks(bytes);
+        const iend = chunks.at(-1);
+        const keywordBytes = textEncoder.encode(PROVENANCE_KEYWORD);
+        const iTxtData = concatBytes(
+          keywordBytes,
+          new Uint8Array([0, 0, 0, 0, 0]),
+          jsonBytes
+        );
+        const iTxtChunk = createPngChunk("iTXt", iTxtData);
+        const annotated = concatBytes(bytes.slice(0, iend.offset), iTxtChunk, bytes.slice(iend.offset));
+        return new Blob([annotated], { type: "image/png" });
       }
 
       function formatDate(value, shortYear) {
@@ -522,14 +1007,19 @@
         }
 
         try {
-          currentSvg = buildStampSvg(config);
+          setButtonsDisabled(true);
+          setStatus("画像を準備しています。", "working");
+          const identity = { recordId: createRecordId(), createdAt: new Date().toISOString() };
+          const visualSvg = buildStampSvg(config);
+          const annotatedSvg = await embedSvgProvenance(visualSvg, config, identity);
+          if (generation !== renderGeneration) return;
+          currentSvg = annotatedSvg;
           currentConfig = config;
           renderPreview(currentSvg);
-          setButtonsDisabled(true);
           elements.downloadSvg.disabled = false;
-          setStatus("画像を準備しています。", "working");
           if (document.fonts && document.fonts.ready) await document.fonts.ready;
-          const pngBlob = await renderPngBlob(currentSvg, config.outputSize);
+          const rawPngBlob = await renderPngBlob(currentSvg, config.outputSize);
+          const pngBlob = await embedPngProvenance(rawPngBlob, config, identity);
           if (generation !== renderGeneration) return;
           currentPngBlob = pngBlob;
           setButtonsDisabled(false);
@@ -593,11 +1083,29 @@
         setStatus("SVGを保存しました。", "success");
       });
 
+      elements.verifyFile.addEventListener("change", async () => {
+        const generation = ++verificationGeneration;
+        const file = elements.verifyFile.files?.[0];
+        elements.verifyDetails.replaceChildren();
+        setVerifyStatus("画像を確認しています。", "working");
+        try {
+          const result = await verifyArtifact(file);
+          if (generation !== verificationGeneration) return;
+          renderVerificationResult(result);
+        } catch (error) {
+          if (generation !== verificationGeneration) return;
+          setVerifyStatus(error instanceof Error ? error.message : "画像を確認できませんでした。", "error");
+        }
+      });
+
+      window.addEventListener("hashchange", configureVerificationMode);
+
       for (const input of [elements.topName, elements.bottomName, elements.date, elements.shortYear, ...elements.outputSizes]) {
         input.addEventListener("input", refreshOutput);
       }
 
       elements.date.value = getLocalDateValue();
+      configureVerificationMode();
       refreshOutput();
     })();
   </script>
