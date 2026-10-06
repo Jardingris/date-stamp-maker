@@ -200,6 +200,11 @@
       background: #e8f5ed;
     }
 
+    #status[data-state="warning"] {
+      color: #755000;
+      background: #fff7db;
+    }
+
     #status[data-state="error"] {
       color: #9e1b1b;
       background: #fff0f0;
@@ -318,7 +323,7 @@
           <input id="bottom-name" type="text" inputmode="text" autocomplete="off"
                  placeholder="下段（任意）" aria-describedby="name-help">
         </div>
-        <p id="name-help" class="preview-note">各欄は4文字以内です。両方とも空欄にできます。</p>
+        <p id="name-help" class="preview-note">各欄は8文字以内です。両方とも空欄にできます。</p>
         <div class="field">
           <label for="stamp-date">日付</label>
           <input id="stamp-date" type="date" required>
@@ -342,7 +347,9 @@
           <button id="copy-png" class="primary" type="button" disabled>透過PNGをコピー</button>
           <button id="download-png" type="button" disabled>PNGを保存</button>
           <button id="download-svg" type="button" disabled>SVGを保存</button>
+          <button id="download-pdf" type="button" disabled>Acrobat用PDFを保存</button>
         </div>
+        <p class="preview-note">Acrobat Readerでは、保存したPDFをカスタムスタンプとして登録してください。</p>
         <p id="status" role="status" aria-live="polite" data-state="working">画像を準備しています。</p>
       </section>
 
@@ -372,7 +379,9 @@
       const INK = "#D00000";
       const NAME_FONT_FAMILY = "'BIZ UDMincho Medium', 'BIZ UDMincho', 'BIZ UD明朝 Medium', 'Hiragino Mincho ProN', 'MS Mincho', 'Noto Serif CJK JP', serif";
       const DATE_FONT_FAMILY = "'BIZ UDPMincho Medium', 'BIZ UDPMincho', 'BIZ UDP明朝 Medium', 'Hiragino Mincho ProN', 'MS PMincho', 'Noto Serif CJK JP', serif";
-      const MAX_NAME_LENGTH = 4;
+      const MAX_NAME_LENGTH = 8;
+      const STAMP_INNER_RADIUS = 425;
+      const NAME_EDGE_MARGIN = 10;
       const PROVENANCE_SCHEMA = "org.jardingris.date-stamp-maker.provenance";
       const PROVENANCE_VERSION = 1;
       const PROVENANCE_ISSUER_ID = "6dce9d5b-ddd2-4121-b179-c8e6a861c061";
@@ -397,6 +406,7 @@
         copyPng: document.querySelector("#copy-png"),
         downloadPng: document.querySelector("#download-png"),
         downloadSvg: document.querySelector("#download-svg"),
+        downloadPdf: document.querySelector("#download-pdf"),
         status: document.querySelector("#status"),
         verifier: document.querySelector("#provenance-verifier"),
         verifyFile: document.querySelector("#verify-file"),
@@ -407,6 +417,7 @@
       let currentSvg = "";
       let currentPngBlob = null;
       let currentConfig = null;
+      let currentIdentity = null;
       let renderGeneration = 0;
       let verificationGeneration = 0;
       const measureCanvas = document.createElement("canvas");
@@ -441,10 +452,10 @@
 
       function validateStampConfig(config) {
         if (graphemeLength(config.topName) > MAX_NAME_LENGTH) {
-          return { valid: false, field: "topName", message: "上段は4文字以内で入力してください。" };
+          return { valid: false, field: "topName", message: "上段は8文字以内で入力してください。" };
         }
         if (graphemeLength(config.bottomName) > MAX_NAME_LENGTH) {
-          return { valid: false, field: "bottomName", message: "下段は4文字以内で入力してください。" };
+          return { valid: false, field: "bottomName", message: "下段は8文字以内で入力してください。" };
         }
         const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(config.date);
         if (!match) {
@@ -905,10 +916,59 @@
         return low;
       }
 
+      function calculateNameFontSize(text, centerY) {
+        if (!text) return 230;
+        let low = 1;
+        let high = 231;
+        while (high - low > 1) {
+          const middle = Math.floor((low + high) / 2);
+          measureContext.font = `600 ${middle}px ${NAME_FONT_FAMILY}`;
+          measureContext.textAlign = "center";
+          measureContext.textBaseline = "middle";
+          const metrics = measureContext.measureText(text);
+          const horizontalHalf = Math.max(
+            metrics.width / 2,
+            metrics.actualBoundingBoxLeft,
+            metrics.actualBoundingBoxRight
+          );
+          const verticalHalf = Math.max(
+            middle / 2,
+            metrics.actualBoundingBoxAscent,
+            metrics.actualBoundingBoxDescent
+          );
+          const farthestY = centerY < 500 ? centerY - verticalHalf : centerY + verticalHalf;
+          const verticalDistance = Math.abs(farthestY - 500);
+          const availableHalf = verticalDistance < STAMP_INNER_RADIUS
+            ? Math.sqrt(STAMP_INNER_RADIUS ** 2 - verticalDistance ** 2) - NAME_EDGE_MARGIN
+            : 0;
+          if (horizontalHalf <= availableHalf) low = middle;
+          else high = middle;
+        }
+        return low;
+      }
+
+      function calculatePairedNameSizes(config) {
+        const topSize = calculateNameFontSize(config.topName, 208);
+        const bottomSize = calculateNameFontSize(config.bottomName, 792);
+        const topLength = graphemeLength(config.topName);
+        const bottomLength = graphemeLength(config.bottomName);
+        if (topLength > 0 && bottomLength > 0 && Math.abs(topLength - bottomLength) <= 1) {
+          const sharedSize = Math.min(topSize, bottomSize);
+          return { topSize: sharedSize, bottomSize: sharedSize };
+        }
+        return { topSize, bottomSize };
+      }
+
+      function hasLargeNameLengthDifference(config) {
+        const topLength = graphemeLength(config.topName);
+        const bottomLength = graphemeLength(config.bottomName);
+        if (topLength === 0 || bottomLength === 0) return false;
+        return Math.abs(topLength - bottomLength) >= 4;
+      }
+
       function buildStampSvg(config) {
         const dateText = formatDate(config.date, config.shortYear);
-        const topSize = calculateFontSize(config.topName, 680, 230, 92, NAME_FONT_FAMILY);
-        const bottomSize = calculateFontSize(config.bottomName, 680, 230, 92, NAME_FONT_FAMILY);
+        const { topSize, bottomSize } = calculatePairedNameSizes(config);
         const dateSize = calculateFontSize(dateText, 760, config.shortYear ? 165 : 145, 96, DATE_FONT_FAMILY);
         const safeTop = escapeXml(config.topName);
         const safeBottom = escapeXml(config.bottomName);
@@ -916,6 +976,7 @@
         return `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1000 1000" role="img" aria-label="日付印">
   <defs>
     <clipPath id="stamp-clip"><circle cx="500" cy="500" r="440"/></clipPath>
+    <clipPath id="stamp-inner-clip"><path d="M500 75a425 425 0 1 1 0 850a425 425 0 1 1 0-850z"/></clipPath>
   </defs>
   <g fill="none" stroke="${config.color}" stroke-width="30" stroke-linecap="butt" stroke-linejoin="round">
     <circle cx="500" cy="500" r="440"/>
@@ -925,9 +986,9 @@
     </g>
   </g>
   <g fill="${config.color}" font-weight="600" text-anchor="middle" dominant-baseline="central">
-    <text id="top-text" x="500" y="208" font-family="${NAME_FONT_FAMILY}" font-size="${topSize}">${safeTop}</text>
+    <text id="top-text" x="500" y="208" font-family="${NAME_FONT_FAMILY}" font-size="${topSize}" clip-path="url(#stamp-inner-clip)">${safeTop}</text>
     <text id="date-text" x="500" y="500" font-family="${DATE_FONT_FAMILY}" font-size="${dateSize}">${safeDate}</text>
-    <text id="bottom-text" x="500" y="792" font-family="${NAME_FONT_FAMILY}" font-size="${bottomSize}">${safeBottom}</text>
+    <text id="bottom-text" x="500" y="792" font-family="${NAME_FONT_FAMILY}" font-size="${bottomSize}" clip-path="url(#stamp-inner-clip)">${safeBottom}</text>
   </g>
 </svg>`;
       }
@@ -970,10 +1031,73 @@
         });
       }
 
+      async function deflateBytes(bytes) {
+        if (typeof CompressionStream !== "function") {
+          throw new Error("このブラウザではAcrobat用PDFを生成できません。最新のEdgeまたはChromeを使用してください。");
+        }
+        const compressedStream = new Blob([bytes])
+          .stream()
+          .pipeThrough(new CompressionStream("deflate"));
+        return new Uint8Array(await new Response(compressedStream).arrayBuffer());
+      }
+
+      async function buildTransparentPdf(imageData) {
+        const pixelCount = imageData.width * imageData.height;
+        const rgb = new Uint8Array(pixelCount * 3);
+        const alpha = new Uint8Array(pixelCount);
+        for (let pixel = 0, rgbOffset = 0; pixel < pixelCount; pixel += 1, rgbOffset += 3) {
+          const rgbaOffset = pixel * 4;
+          rgb[rgbOffset] = imageData.data[rgbaOffset];
+          rgb[rgbOffset + 1] = imageData.data[rgbaOffset + 1];
+          rgb[rgbOffset + 2] = imageData.data[rgbaOffset + 2];
+          alpha[pixel] = imageData.data[rgbaOffset + 3];
+        }
+
+        const [compressedRgb, compressedAlpha] = await Promise.all([
+          deflateBytes(rgb),
+          deflateBytes(alpha)
+        ]);
+        const pageSize = 30 * 72 / 25.4;
+        const pageSizeText = pageSize.toFixed(4);
+        const content = textEncoder.encode(`q\n${pageSizeText} 0 0 ${pageSizeText} 0 0 cm\n/Im0 Do\nQ\n`);
+        const chunks = [];
+        const offsets = new Array(7).fill(0);
+        let byteLength = 0;
+        const append = (...parts) => {
+          for (const part of parts) {
+            const bytes = typeof part === "string" ? textEncoder.encode(part) : part;
+            chunks.push(bytes);
+            byteLength += bytes.length;
+          }
+        };
+        const addObject = (number, ...parts) => {
+          offsets[number] = byteLength;
+          append(`${number} 0 obj\n`, ...parts, "\nendobj\n");
+        };
+
+        append(textEncoder.encode("%PDF-1.7\n%"), new Uint8Array([226, 227, 207, 211, 10]));
+        addObject(1, "<< /Type /Catalog /Pages 2 0 R >>");
+        addObject(2, "<< /Type /Pages /Kids [3 0 R] /Count 1 >>");
+        addObject(3, `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 ${pageSizeText} ${pageSizeText}] /Resources << /XObject << /Im0 5 0 R >> >> /Contents 4 0 R >>`);
+        addObject(4, `<< /Length ${content.length} >>\nstream\n`, content, "endstream");
+        addObject(5, `<< /Type /XObject /Subtype /Image /Width ${imageData.width} /Height ${imageData.height} /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /FlateDecode /SMask 6 0 R /Length ${compressedRgb.length} >>\nstream\n`, compressedRgb, "\nendstream");
+        addObject(6, `<< /Type /XObject /Subtype /Image /Width ${imageData.width} /Height ${imageData.height} /ColorSpace /DeviceGray /BitsPerComponent 8 /Filter /FlateDecode /Length ${compressedAlpha.length} >>\nstream\n`, compressedAlpha, "\nendstream");
+
+        const xrefOffset = byteLength;
+        let xref = "xref\n0 7\n0000000000 65535 f \n";
+        for (let objectNumber = 1; objectNumber <= 6; objectNumber += 1) {
+          xref += `${String(offsets[objectNumber]).padStart(10, "0")} 00000 n \n`;
+        }
+        xref += `trailer\n<< /Size 7 /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF\n`;
+        append(xref);
+        return new Blob(chunks, { type: "application/pdf" });
+      }
+
       function setButtonsDisabled(disabled) {
         elements.copyPng.disabled = disabled;
         elements.downloadPng.disabled = disabled;
         elements.downloadSvg.disabled = disabled;
+        elements.downloadPdf.disabled = disabled;
       }
 
       function setStatus(message, state) {
@@ -998,6 +1122,7 @@
         updateInputValidity(validation.field);
         currentPngBlob = null;
         currentConfig = null;
+        currentIdentity = null;
         if (!validation.valid) {
           currentSvg = "";
           elements.preview.replaceChildren();
@@ -1009,26 +1134,34 @@
         try {
           setButtonsDisabled(true);
           setStatus("画像を準備しています。", "working");
+          if (document.fonts && document.fonts.ready) await document.fonts.ready;
+          if (generation !== renderGeneration) return;
           const identity = { recordId: createRecordId(), createdAt: new Date().toISOString() };
           const visualSvg = buildStampSvg(config);
           const annotatedSvg = await embedSvgProvenance(visualSvg, config, identity);
           if (generation !== renderGeneration) return;
           currentSvg = annotatedSvg;
           currentConfig = config;
+          currentIdentity = identity;
           renderPreview(currentSvg);
           elements.downloadSvg.disabled = false;
-          if (document.fonts && document.fonts.ready) await document.fonts.ready;
           const rawPngBlob = await renderPngBlob(currentSvg, config.outputSize);
           const pngBlob = await embedPngProvenance(rawPngBlob, config, identity);
           if (generation !== renderGeneration) return;
           currentPngBlob = pngBlob;
           setButtonsDisabled(false);
-          setStatus("コピーまたは保存できます。", "ready");
+          if (hasLargeNameLengthDifference(config)) {
+            setStatus("上下の文字数差が大きいため、印影を確認し、文字数のバランス調整もご検討ください。", "warning");
+          } else {
+            setStatus("コピーまたは保存できます。", "ready");
+          }
         } catch (error) {
           if (generation !== renderGeneration) return;
           currentPngBlob = null;
+          currentIdentity = null;
           elements.copyPng.disabled = true;
           elements.downloadPng.disabled = true;
+          elements.downloadPdf.disabled = true;
           setStatus(error instanceof Error ? error.message : "画像の生成に失敗しました。", "error");
         }
       }
@@ -1081,6 +1214,33 @@
         const blob = new Blob([currentSvg], { type: "image/svg+xml;charset=utf-8" });
         downloadBlob(blob, `${fileStem(currentConfig)}.svg`);
         setStatus("SVGを保存しました。", "success");
+      });
+
+      elements.downloadPdf.addEventListener("click", async () => {
+        if (!currentSvg || !currentConfig || !currentIdentity) return;
+        const generation = renderGeneration;
+        const svg = currentSvg;
+        const config = currentConfig;
+        const identity = currentIdentity;
+        elements.downloadPdf.disabled = true;
+        setStatus("Acrobat用PDFを準備しています。", "working");
+        try {
+          const pdfConfig = { ...config, outputSize: 1024 };
+          const rawPngBlob = await renderPngBlob(svg, 1024);
+          const pngBlob = await embedPngProvenance(rawPngBlob, pdfConfig, identity);
+          const imageData = await blobToImageData(pngBlob);
+          const pdfBlob = await buildTransparentPdf(imageData);
+          if (generation !== renderGeneration) return;
+          downloadBlob(pdfBlob, `${fileStem(config)}_Acrobat.pdf`);
+          setStatus("Acrobat用PDFを保存しました。", "success");
+        } catch (error) {
+          if (generation !== renderGeneration) return;
+          setStatus(error instanceof Error ? error.message : "Acrobat用PDFの生成に失敗しました。", "error");
+        } finally {
+          if (generation === renderGeneration && currentSvg && currentConfig && currentIdentity) {
+            elements.downloadPdf.disabled = false;
+          }
+        }
       });
 
       elements.verifyFile.addEventListener("change", async () => {
